@@ -318,23 +318,36 @@ function showWarn(m){ const w=$("noSR"); w.textContent=m; w.style.display="block
 if(!SR) $("noSR").style.display="block";
 let activeRec=null;
 /* 녹음: 말을 멈추면 자동 종료. 끊김(오래 멈춤) 횟수도 셉니다. */
+const IS_ANDROID=/Android/i.test(navigator.userAgent);
+// 결과 조각들을 이어 붙이되, 앞 조각을 그대로 포함하는(누적된) 조각은 겹치지 않게 합칩니다.
+function mergeResults(list){
+  const out=[];
+  for(let t of list){ t=t.trim(); if(!t)continue;
+    const last=out.length?out[out.length-1]:null, a=t.toLowerCase(), b=last&&last.toLowerCase();
+    if(b&&a.startsWith(b)) out[out.length-1]=t;
+    else if(b&&b.startsWith(a)) {}
+    else out.push(t); }
+  return out.join(" ");
+}
 function listen({silenceMs=2200, pauseMs=1300, onLive}={}){
   return new Promise(resolve=>{
     if(!SR){ showWarn("음성 인식이 안 되는 환경이에요. 크롬이나 엣지에서 열어 주세요."); resolve(null); return; }
     stopAudio();
-    const r=new SR(); r.lang="en-US"; r.continuous=true; r.interimResults=true;
-    let finals=[], interim="", lastCount=0, lastT=0, firstT=0, pauses=0, timer=null, startT=Date.now(), done=false, running=true;
-    const text=()=>(finals.join(" ")+" "+interim).trim();
+    // 안드로이드(갤럭시) 크롬은 continuous 모드에서 같은 말을 여러 번 겹쳐 돌려주는 문제가 있어
+    // 한 번에 한 덩어리씩 듣고(continuous=false) 끝나면 다시 시작합니다.
+    const r=new SR(); r.lang="en-US"; r.continuous=!IS_ANDROID; r.interimResults=true;
+    let sessions=[], cur="", lastCount=0, lastT=0, firstT=0, pauses=0, timer=null, startT=Date.now(), done=false, running=true;
+    const text=()=>(sessions.join(" ")+" "+cur).trim();
     const finish=()=>{ if(done)return; done=true; running=false; clearTimeout(timer); try{r.stop()}catch(e){}
       activeRec=null; resolve({text:text(),pauses,dur:firstT?(lastT-firstT)/1000:0}); };
     const arm=()=>{ clearTimeout(timer); timer=setTimeout(finish, lastCount?silenceMs:9000); };
-    r.onresult=e=>{ interim=""; for(let i=e.resultIndex;i<e.results.length;i++){
-        if(e.results[i].isFinal) finals.push(e.results[i][0].transcript.trim()); else interim+=e.results[i][0].transcript; }
+    r.onresult=e=>{ const list=[]; for(let i=0;i<e.results.length;i++) list.push(e.results[i][0].transcript);
+      cur=mergeResults(list);
       const c=words(text()).length, now=Date.now();
       if(c>lastCount){ if(lastCount&&now-lastT>pauseMs)pauses++; if(!firstT)firstT=now; lastT=now; lastCount=c; arm(); }
       onLive&&onLive(text()); };
     r.onerror=e=>{ if(e.error==="not-allowed"||e.error==="service-not-allowed"){ showWarn("마이크를 쓸 수 없어요. 브라우저에서 마이크를 허용해 주세요. 이 화면에서 마이크가 막혀 있으면 듣기만 연습할 수 있어요."); finish(); } };
-    r.onend=()=>{ if(running&&!done){ try{r.start()}catch(e){finish()} } };
+    r.onend=()=>{ if(cur){ sessions.push(cur); cur=""; } if(running&&!done){ try{r.start()}catch(e){finish()} } };
     activeRec={stop:finish};
     try{ r.start(); }catch(e){ finish(); }
     arm();
